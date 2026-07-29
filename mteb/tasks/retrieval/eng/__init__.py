@@ -143,6 +143,7 @@ from .fin_qa_retrieval import FinQARetrieval
 from .finance_bench_retrieval import FinanceBenchRetrieval
 from .flickr30k_i2t_retrieval import Flickr30kI2TRetrieval
 from .flickr30k_t2i_retrieval import Flickr30kT2IRetrieval
+from .flickr_audio_image_retrieval import FlickrAudioToImageRetrieval, FlickrImageToAudioRetrieval
 from .forb_i2i_retrieval import FORBI2I
 from .giga_speech import GigaSpeechA2TRetrieval, GigaSpeechT2ARetrieval
 from .gl_dv2_i2i_retrieval import GLDv2I2IRetrieval
@@ -563,6 +564,8 @@ __all__ = [
     "FinanceBenchRetrieval",
     "Flickr30kI2TRetrieval",
     "Flickr30kT2IRetrieval",
+    "FlickrAudioToImageRetrieval",
+    "FlickrImageToAudioRetrieval",
     "GLDv2I2IRetrieval",
     "GLDv2I2TRetrieval",
     "GigaSpeechA2TRetrieval",
