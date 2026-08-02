@@ -22,7 +22,7 @@ class FlickrAudioToImageRetrieval(AbsTaskRetrieval):
         description="Audio to Image retrieval for Flickr Audio Image dataset.",
         reference="https://arxiv.org/pdf/1511.03690",
         dataset={
-            "path": "deep9539/flickr-audio-image-debug",
+            "path": "deep9539/flickr-audio-image",
             "revision": "cd1902b7aa5ff256aa656a20131a42078b38494c",
         },
         type="Retrieval",
