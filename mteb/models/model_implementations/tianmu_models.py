@@ -76,13 +76,21 @@ class TianmuEmbUniWrapper(Qwen3VLEmbeddingWrapper):
             **super_kwargs,
         )
 
+        # Download the specific shard file of Qwen/Qwen2.5-Omni-7B containing thinker.audio_tower weights,
+        # along with its config and index to ensure they are loaded locally instead of being skipped.
+        qwen_audio_dir = None
+        for qwen_filename in ["config.json", "model.safetensors.index.json", "model-00001-of-00005.safetensors"]:
+            qwen_path = hf_hub_download(repo_id=audio_model_path, filename=qwen_filename)
+            if qwen_audio_dir is None:
+                qwen_audio_dir = str(pathlib.Path(qwen_path).parent)
+
         # 3. Initialize the audio branch and projection head of Qwen3vlOmniEmbed
         # We pass vl_model_name=None to skip reloading the VL model, and then manually
         # set its vl_backbone to our already-loaded `self.model`.
         self.tianmu_model = Qwen3vlOmniEmbed(
             vl_model_name=None,
             audio_encoder_type="omni",
-            audio_model_path=audio_model_path,
+            audio_model_path=qwen_audio_dir,
             freeze_vl=True,
             freeze_audio_encoder=True,
         )
@@ -127,66 +135,78 @@ class TianmuEmbUniWrapper(Qwen3VLEmbeddingWrapper):
         prompt_type: PromptType | None = None,
         **kwargs: Any,
     ) -> Array:
-        # Determine if we are dealing with an audio dataset/batch
         features = inputs.dataset.features
-        has_audio = "audio" in features
+        present = [m for m in ("audio", "video", "image", "text") if m in features]
+        if not present:
+            raise ValueError(f"No supported modalities found in dataset features: {list(features)}")
 
-        if has_audio:
-            # Set target sampling rate for audio collation
-            inputs.collate_fn = AudioCollator(target_sampling_rate=self.sampling_rate)
-            all_embeddings = []
+        original_collate_fn = inputs.collate_fn
+        embeddings = None
 
-            # Map dataset parser/name to target modality index for soft adapter fusion
-            from tianmu_model.adapter import target_modality_from_parser
+        for modality in present:
+            if modality == "audio":
+                # Set target sampling rate for audio collation
+                inputs.collate_fn = AudioCollator(target_sampling_rate=self.sampling_rate)
+                all_audio_embeddings = []
 
-            target_mod_idx = target_modality_from_parser(task_metadata.name)
-            target_modality_tensor = torch.tensor([target_mod_idx], dtype=torch.long, device=self.device)
+                # Map dataset parser/name to target modality index for soft adapter fusion
+                from tianmu_model.adapter import target_modality_from_parser
 
-            for batch in tqdm(inputs, desc="Encoding audio"):
-                audios = batch.get("audio")
-                # Handle inputs as list of raw audio arrays
-                audio_arrays = [
-                    a["array"] if isinstance(a, dict) and "array" in a else a
-                    for a in audios
-                ]
-                # Preprocess audio waveforms with Qwen2.5-Omni's feature_extractor directly
-                # to avoid processor ValueError requiring text prompt input
-                processor_outputs = self.audio_processor.feature_extractor(
-                    raw_speech=audio_arrays,
-                    sampling_rate=self.sampling_rate,
-                    return_tensors="pt",
-                ).to(self.device)
+                target_mod_idx = target_modality_from_parser(task_metadata.name)
+                target_modality_tensor = torch.tensor([target_mod_idx], dtype=torch.long, device=self.device)
 
-                with torch.no_grad():
-                    # Call encode_audio of the tianmu_model
-                    embeddings = self.tianmu_model.encode_audio(
-                        input_features=processor_outputs["input_features"],
-                        feature_attention_mask=processor_outputs.get("feature_attention_mask"),
-                        attention_mask=processor_outputs.get("attention_mask"),
-                        target_modality=target_modality_tensor,
-                    )
-                all_embeddings.append(embeddings.cpu().float().numpy())
-            return np.concatenate(all_embeddings, axis=0)
+                for batch in tqdm(inputs, desc="Encoding audio"):
+                    audios = batch.get("audio")
+                    audio_arrays = [
+                        a["array"] if isinstance(a, dict) and "array" in a else a
+                        for a in audios
+                    ]
+                    # Preprocess audio waveforms with Qwen2.5-Omni's feature_extractor directly
+                    processor_outputs = self.audio_processor.feature_extractor(
+                        raw_speech=audio_arrays,
+                        sampling_rate=self.sampling_rate,
+                        return_tensors="pt",
+                    ).to(self.device)
 
-        else:
-            # Route text, image, and video modalities through the parents' Qwen3-VL-Embedding encoder
-            embeddings = super().encode(
-                inputs,
-                task_metadata=task_metadata,
-                hf_split=hf_split,
-                hf_subset=hf_subset,
-                prompt_type=prompt_type,
-                **kwargs,
-            )
-            # Project parent's 4096-dim VL backbone embeddings to the unified 3584-dim space
-            # (matches self.tianmu_model._match_embedding_dim and normalization in modeling.py)
-            target_dim = 3584
-            if embeddings.shape[-1] > target_dim:
-                embeddings = embeddings[..., :target_dim]
-                # Re-normalize to unit length in the projected 3584 space
-                norms = np.linalg.norm(embeddings, axis=-1, keepdims=True)
-                embeddings /= np.maximum(norms, 1e-12)
-            return embeddings
+                    with torch.no_grad():
+                        mod_embeddings = self.tianmu_model.encode_audio(
+                            input_features=processor_outputs["input_features"],
+                            feature_attention_mask=processor_outputs.get("feature_attention_mask"),
+                            attention_mask=processor_outputs.get("attention_mask"),
+                            target_modality=target_modality_tensor,
+                        )
+                    all_audio_embeddings.append(mod_embeddings.cpu().float().numpy())
+                modality_embeddings = np.concatenate(all_audio_embeddings, axis=0)
+            else:
+                # Restore original collation function for text, image, video encoding
+                inputs.collate_fn = original_collate_fn
+                modality_embeddings = super().encode(
+                    inputs,
+                    task_metadata=task_metadata,
+                    hf_split=hf_split,
+                    hf_subset=hf_subset,
+                    prompt_type=prompt_type,
+                    **kwargs,
+                )
+                # Project parent's 4096-dim VL backbone embeddings to the unified 3584-dim space
+                # (matches self.tianmu_model._match_embedding_dim and normalization in modeling.py)
+                target_dim = 3584
+                if modality_embeddings.shape[-1] > target_dim:
+                    modality_embeddings = modality_embeddings[..., :target_dim]
+                    norms = np.linalg.norm(modality_embeddings, axis=-1, keepdims=True)
+                    modality_embeddings /= np.maximum(norms, 1e-12)
+
+            if embeddings is None:
+                embeddings = modality_embeddings
+            else:
+                # Elementwise sum for multi-modal fusion
+                embeddings += modality_embeddings
+
+        # Re-normalize final fused embeddings to unit length in the unified projected space
+        norms = np.linalg.norm(embeddings, axis=-1, keepdims=True)
+        embeddings /= np.maximum(norms, 1e-12)
+
+        return embeddings
 
 
 tianmu_emb_uni = ModelMeta(
