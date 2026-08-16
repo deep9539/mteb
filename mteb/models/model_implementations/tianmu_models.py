@@ -147,12 +147,12 @@ class TianmuEmbUniWrapper(Qwen3VLEmbeddingWrapper):
                     a["array"] if isinstance(a, dict) and "array" in a else a
                     for a in audios
                 ]
-                # Preprocess audio waveforms with Qwen2.5-Omni processor
-                processor_outputs = self.audio_processor(
-                    audio=audio_arrays,
+                # Preprocess audio waveforms with Qwen2.5-Omni's feature_extractor directly
+                # to avoid processor ValueError requiring text prompt input
+                processor_outputs = self.audio_processor.feature_extractor(
+                    raw_speech=audio_arrays,
                     sampling_rate=self.sampling_rate,
                     return_tensors="pt",
-                    padding=True,
                 ).to(self.device)
 
                 with torch.no_grad():
