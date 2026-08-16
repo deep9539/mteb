@@ -87,14 +87,21 @@ class TianmuEmbUniWrapper(Qwen3VLEmbeddingWrapper):
         self.tianmu_model.vl_backbone_config = self.model.config if hasattr(self.model, "config") else None
 
         # 4. Load the adapter, audio connector, projection, and prototype weights
-        from safetensors.torch import load_file
+        import json
+        from transformers.modeling_utils import load_sharded_checkpoint
 
-        # Download the model.safetensors file containing adapter and audio weights
-        weight_path = hf_hub_download(repo_id=model_name, revision=revision, filename="model.safetensors")
-        state_dict = load_file(weight_path, device="cpu")
+        # Download the shard index and all referenced shard files
+        index_path = hf_hub_download(repo_id=model_name, revision=revision, filename="model.safetensors.index.json")
+        with open(index_path) as f:
+            index_data = json.load(f)
 
-        # Load weights into tianmu_model (using strict=False as some non-adapter parameters are frozen/unused)
-        self.tianmu_model.load_state_dict(state_dict, strict=False)
+        # Download unique shard filenames
+        shards = sorted(list(set(index_data["weight_map"].values())))
+        for shard in shards:
+            hf_hub_download(repo_id=model_name, revision=revision, filename=shard)
+
+        # Load sharded state dict into tianmu_model (strict=False as some non-adapter parameters are frozen/unused)
+        load_sharded_checkpoint(self.tianmu_model, repo_dir, strict=False)
         self.tianmu_model.to(self.device)
         self.tianmu_model.eval()
 
