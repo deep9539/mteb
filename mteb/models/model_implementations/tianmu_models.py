@@ -60,7 +60,7 @@ class TianmuEmbUniWrapper(Qwen3VLEmbeddingWrapper):
         if repo_dir not in sys.path:
             sys.path.insert(0, repo_dir)
 
-        from tianmu_model.modeling import OmniEmbedModel
+        from tianmu_model.modeling import Qwen3vlOmniEmbed
 
         # 2. Initialize parent class to load Qwen3-VL-Embedding-8B SentenceTransformer
         super().__init__(
@@ -69,10 +69,10 @@ class TianmuEmbUniWrapper(Qwen3VLEmbeddingWrapper):
             **kwargs,
         )
 
-        # 3. Initialize the audio branch and projection head of OmniEmbedModel
+        # 3. Initialize the audio branch and projection head of Qwen3vlOmniEmbed
         # We pass vl_model_name=None to skip reloading the VL model, and then manually
         # set its vl_backbone to our already-loaded `self.model`.
-        self.tianmu_model = OmniEmbedModel(
+        self.tianmu_model = Qwen3vlOmniEmbed(
             vl_model_name=None,
             audio_encoder_type="omni",
             audio_model_path=audio_model_path,
