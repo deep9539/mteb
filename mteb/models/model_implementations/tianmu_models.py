@@ -62,11 +62,15 @@ class TianmuEmbUniWrapper(Qwen3VLEmbeddingWrapper):
 
         from tianmu_model.modeling import Qwen3vlOmniEmbed
 
+        # Avoid keyword argument collision in Qwen3VLEmbeddingWrapper by popping trust_remote_code
+        super_kwargs = kwargs.copy()
+        super_kwargs.pop("trust_remote_code", None)
+
         # 2. Initialize parent class to load Qwen3-VL-Embedding-8B SentenceTransformer
         super().__init__(
             model_name=vl_model_name,
             device=device,
-            **kwargs,
+            **super_kwargs,
         )
 
         # 3. Initialize the audio branch and projection head of Qwen3vlOmniEmbed
