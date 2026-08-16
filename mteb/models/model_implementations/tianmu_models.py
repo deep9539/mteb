@@ -36,11 +36,13 @@ class TianmuEmbUniWrapper(Qwen3VLEmbeddingWrapper):
         self,
         model_name: str = "TianmuLab/Tianmu-Emb-Uni",
         revision: str = "fc9106fc68156d2abde24cd046a8c989fa15fdc0",
-        device: str | None = None,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
         vl_model_name: str = "Qwen/Qwen3-VL-Embedding-8B",
         audio_model_path: str = "Qwen/Qwen2.5-Omni-7B",
         **kwargs: Any,
     ) -> None:
+        self.device = device
+
         # 1. Download only the small code files dynamically using huggingface_hub
         from huggingface_hub import hf_hub_download
 
@@ -69,7 +71,7 @@ class TianmuEmbUniWrapper(Qwen3VLEmbeddingWrapper):
         # 2. Initialize parent class to load Qwen3-VL-Embedding-8B SentenceTransformer
         super().__init__(
             model_name=vl_model_name,
-            device=device,
+            device=self.device,
             **super_kwargs,
         )
 
