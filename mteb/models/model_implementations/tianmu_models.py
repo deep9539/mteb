@@ -1,23 +1,24 @@
 from __future__ import annotations
 
-import os
+import pathlib
 import sys
-import logging
-from typing import Any, TYPE_CHECKING
-import torch
+from typing import TYPE_CHECKING, Any
+
 import numpy as np
+import torch
 from tqdm.auto import tqdm
 
-from mteb.models.model_implementations.qwen3_vl_embedding_models import Qwen3VLEmbeddingWrapper
-from mteb.models.model_meta import ModelMeta, ScoringFunction
 from mteb.models.modality_collators import AudioCollator
+from mteb.models.model_implementations.qwen3_vl_embedding_models import (
+    Qwen3VLEmbeddingWrapper,
+)
+from mteb.models.model_meta import ModelMeta, ScoringFunction
 
 if TYPE_CHECKING:
-    from mteb.abstasks.task_metadata import TaskMetadata
-    from mteb.types import PromptType, Array, BatchedInput
     from torch.utils.data import DataLoader
 
-logger = logging.getLogger(__name__)
+    from mteb.abstasks.task_metadata import TaskMetadata
+    from mteb.types import Array, BatchedInput, PromptType
 
 
 class TianmuEmbUniWrapper(Qwen3VLEmbeddingWrapper):
@@ -56,7 +57,7 @@ class TianmuEmbUniWrapper(Qwen3VLEmbeddingWrapper):
 
         # Download config.json and locate the snapshot directory
         config_path = hf_hub_download(repo_id=model_name, revision=revision, filename="config.json")
-        repo_dir = os.path.dirname(config_path)
+        repo_dir = str(pathlib.Path(config_path).parent)
 
         # Add the repository path to sys.path to resolve imports of tianmu_model
         if repo_dir not in sys.path:
@@ -90,15 +91,16 @@ class TianmuEmbUniWrapper(Qwen3VLEmbeddingWrapper):
 
         # 4. Load the adapter, audio connector, projection, and prototype weights
         import json
+
         from safetensors.torch import load_file
 
         # Download the shard index and all referenced shard files
         index_path = hf_hub_download(repo_id=model_name, revision=revision, filename="model.safetensors.index.json")
-        with open(index_path) as f:
+        with pathlib.Path(index_path).open(encoding="utf-8") as f:
             index_data = json.load(f)
 
         # Download unique shard filenames and load them into a single merged state_dict
-        shards = sorted(list(set(index_data["weight_map"].values())))
+        shards = sorted(set(index_data["weight_map"].values()))
         state_dict = {}
         for shard in shards:
             shard_path = hf_hub_download(repo_id=model_name, revision=revision, filename=shard)
@@ -168,7 +170,7 @@ class TianmuEmbUniWrapper(Qwen3VLEmbeddingWrapper):
 
         else:
             # Route text, image, and video modalities through the parents' Qwen3-VL-Embedding encoder
-            return super().encode(
+            embeddings = super().encode(
                 inputs,
                 task_metadata=task_metadata,
                 hf_split=hf_split,
@@ -176,6 +178,15 @@ class TianmuEmbUniWrapper(Qwen3VLEmbeddingWrapper):
                 prompt_type=prompt_type,
                 **kwargs,
             )
+            # Project parent's 4096-dim VL backbone embeddings to the unified 3584-dim space
+            # (matches self.tianmu_model._match_embedding_dim and normalization in modeling.py)
+            target_dim = 3584
+            if embeddings.shape[-1] > target_dim:
+                embeddings = embeddings[..., :target_dim]
+                # Re-normalize to unit length in the projected 3584 space
+                norms = np.linalg.norm(embeddings, axis=-1, keepdims=True)
+                embeddings /= np.maximum(norms, 1e-12)
+            return embeddings
 
 
 tianmu_emb_uni = ModelMeta(
