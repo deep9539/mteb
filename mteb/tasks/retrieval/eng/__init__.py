@@ -143,6 +143,7 @@ from .didemo_retrieval import (
 from .edis_t2it_retrieval import EDIST2ITRetrieval
 from .elastic_kb_retrieval import ElasticKBRetrieval
 from .emo_vdb import EmoVDBA2TRetrieval, EmoVDBT2ARetrieval
+from .emotional_voice_conversion_esd_retrieval import EmotionalVoiceConversionESDRetrieval
 from .encyclopedia_vqa_it2it_retrieval import EncyclopediaVQAIT2ITRetrieval
 from .english_finance1_retrieval import EnglishFinance1Retrieval
 from .english_finance2_retrieval import EnglishFinance2Retrieval
@@ -611,6 +612,7 @@ __all__ = [
     "ElasticKBRetrieval",
     "EmoVDBA2TRetrieval",
     "EmoVDBT2ARetrieval",
+    "EmotionalVoiceConversionESDRetrieval",
     "EncyclopediaVQAIT2ITRetrieval",
     "EnglishFinance1Retrieval",
     "EnglishFinance2Retrieval",
