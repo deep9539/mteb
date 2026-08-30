@@ -130,10 +130,11 @@ class OpsMMEmbeddingWrapper(AbsEncoder):
         processor_kwargs = {
             "text": input_texts,
             "padding": True,
-            "truncation": True,
-            "max_length": self.max_length,
             "return_tensors": "pt",
         }
+        if self.max_length is not None:
+            processor_kwargs["truncation"] = True
+            processor_kwargs["max_length"] = self.max_length
         if processed_images is not None:
             normalized_images = [img if img is not None else [] for img in processed_images]
             if not all(len(img) == 0 for img in normalized_images):
@@ -212,9 +213,11 @@ class OpsMMEmbeddingWrapper(AbsEncoder):
                 num_frames=self.num_frames,
             )
 
+        show_progress_bar = kwargs.get("show_progress_bar", True)
+
         all_embeddings = []
         with torch.no_grad():
-            for batch in inputs:
+            for batch in tqdm(inputs, desc="Encoding", disable=not show_progress_bar):
                 texts = batch["text"] if has_text else None
                 images = batch["image"] if has_image else (batch["video"] if has_video else None)
                 emb = self.embed_batch(texts=texts, images=images, instruction=instruction)
