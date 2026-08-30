@@ -2,6 +2,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 import torch
+from PIL import Image
 
 from mteb.models.model_implementations.ops_mm_models import (
     OpsMMEmbeddingWrapper,
@@ -39,18 +40,22 @@ def test_ops_mm_embedding_wrapper(mock_processor_class, mock_model_class):
         "attention_mask": torch.ones(2, 10, dtype=torch.long),
     }
 
-    # Test embed_batch with text
+    # 1. Test embed_batch with text-only
     texts = ["Hello", "World"]
     embs = wrapper.embed_batch(texts=texts)
     assert isinstance(embs, torch.Tensor)
     assert embs.shape == (2, 128)
 
-    # Test get_text_embeddings
-    text_embeddings = wrapper.get_text_embeddings(texts)
-    assert isinstance(text_embeddings, np.ndarray)
-    assert text_embeddings.shape == (2, 128)
+    # 2. Test embed_batch with image-only
+    img = Image.new("RGB", (100, 100), color="red")
+    embs_img = wrapper.embed_batch(images=[img, img])
+    assert isinstance(embs_img, torch.Tensor)
 
-    # Test embed_batch with 4D video tensor (shape: [T, C, H, W] - e.g. 3 frames of 3x100x100)
+    # 3. Test embed_batch with 4D video tensor (shape: [T, C, H, W] - e.g. 3 frames of 3x100x100)
     video_tensor = torch.zeros((3, 3, 100, 100))
-    embs_video = wrapper.embed_batch(images=[video_tensor])
+    embs_video = wrapper.embed_batch(images=[video_tensor, video_tensor])
     assert isinstance(embs_video, torch.Tensor)
+
+    # 4. Test embed_batch with mixed images and text
+    embs_mixed = wrapper.embed_batch(texts=["Describe this", "Describe that"], images=[img, img])
+    assert isinstance(embs_mixed, torch.Tensor)

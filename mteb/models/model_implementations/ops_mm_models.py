@@ -26,10 +26,9 @@ class OpsMMEmbeddingWrapper(AbsEncoder):
         self,
         model_name: str,
         revision: str | None = None,
-        device: str | None = None,
-        torch_dtype: torch.dtype | str | None = None,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        torch_dtype: Any | None = None,
         attn_implementation: str | None = None,
-        max_length: int | None = None,
         fps: float | None = 2.0,
         max_frames: int | None = 64,
         num_frames: int | None = None,
@@ -38,22 +37,17 @@ class OpsMMEmbeddingWrapper(AbsEncoder):
         from transformers import AutoModelForImageTextToText, AutoProcessor
         from transformers.utils.import_utils import is_flash_attn_2_available
 
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device
         self.model_name = model_name
-        self.max_length = max_length
         self.fps = fps
         self.max_frames = max_frames
         self.num_frames = num_frames
 
-        if attn_implementation is None and is_flash_attn_2_available():
-            attn_implementation = "flash_attention_2"
+        attn_implementation = attn_implementation or (
+            "flash_attention_2" if is_flash_attn_2_available() else None
+        )
 
-        if torch_dtype is None:
-            self.torch_dtype = torch.bfloat16 if self.device == "cuda" else torch.float32
-        elif isinstance(torch_dtype, str):
-            self.torch_dtype = getattr(torch, torch_dtype)
-        else:
-            self.torch_dtype = torch_dtype
+        self.torch_dtype = torch_dtype or ("auto" if self.device.startswith("cuda") else torch.float32)
 
         trust_remote_code = kwargs.pop("trust_remote_code", True)
 
@@ -94,30 +88,41 @@ class OpsMMEmbeddingWrapper(AbsEncoder):
         self,
         texts: list[str] | None = None,
         images: list[Any] | None = None,
+        videos: list[Any] | None = None,
         instruction: str | None = None,
     ) -> torch.Tensor:
-        if texts is None and images is None:
-            raise ValueError("Either texts or images must be provided")
+        batch_size = next((len(x) for x in (texts, images, videos) if x is not None), None)
+        if batch_size is None:
+            raise ValueError("Either texts, images, or videos must be provided")
 
-        batch_size = len(texts) if texts is not None else len(images)  # type: ignore
         inst = instruction or "You are a helpful assistant."
 
         input_texts, input_images = [], []
         for i in range(batch_size):
             text = texts[i] if texts is not None else None
-            image = images[i] if images is not None else None
-
+            
             input_str = ""
-            if image is not None:
-                if isinstance(image, torch.Tensor) and image.ndim == 4:
+            processed_media = []
+
+            media_items = []
+            if images is not None and images[i] is not None:
+                media_items.append(images[i])
+            if videos is not None and videos[i] is not None:
+                media_items.append(videos[i])
+
+            for media in media_items:
+                if isinstance(media, torch.Tensor) and media.ndim == 4:
                     import torchvision.transforms.functional as F
-                    processed_image = [F.to_pil_image(frame) for frame in image]
+                    item_list = [F.to_pil_image(frame) for frame in media]
+                elif isinstance(media, list):
+                    item_list = media
                 else:
-                    processed_image = [image] if not isinstance(image, list) else image
-                input_str += "<|vision_start|><|image_pad|><|vision_end|>" * len(processed_image)
-                input_images.append(processed_image)
-            else:
-                input_images.append(None)
+                    item_list = [media]
+
+                input_str += "<|vision_start|><|image_pad|><|vision_end|>" * len(item_list)
+                processed_media.extend(item_list)
+
+            input_images.append(processed_media if processed_media else None)
 
             if text is not None:
                 input_str += text
@@ -125,20 +130,15 @@ class OpsMMEmbeddingWrapper(AbsEncoder):
             msg = f"<|im_start|>system\n{inst}<|im_end|>\n<|im_start|>user\n{input_str}<|im_end|>\n<|im_start|>assistant\n<|endoftext|>"
             input_texts.append(msg)
 
-        processed_images = input_images if any(img is not None for img in input_images) else None
+        processed_images = input_images if any(input_images) else None
 
         processor_kwargs = {
             "text": input_texts,
             "padding": True,
             "return_tensors": "pt",
         }
-        if self.max_length is not None:
-            processor_kwargs["truncation"] = True
-            processor_kwargs["max_length"] = self.max_length
         if processed_images is not None:
-            normalized_images = [img if img is not None else [] for img in processed_images]
-            if not all(len(img) == 0 for img in normalized_images):
-                processor_kwargs["images"] = normalized_images
+            processor_kwargs["images"] = [img if img is not None else [] for img in processed_images]
 
         inputs = self.processor(**processor_kwargs)
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
@@ -147,42 +147,6 @@ class OpsMMEmbeddingWrapper(AbsEncoder):
             embeddings = self.encode_input(inputs)
 
         return embeddings
-
-    def get_text_embeddings(
-        self,
-        texts: DataLoader[BatchedInput] | list[str],
-        show_progress_bar: bool = True,
-        **kwargs: Any,
-    ) -> Array:
-        instruction = kwargs.get("instruction")
-        if hasattr(texts, "__iter__") and not isinstance(texts, list):
-            all_embeddings = []
-            for batch in tqdm(texts, disable=not show_progress_bar, desc="Encoding texts"):
-                batch_texts = batch["text"]
-                emb = self.embed_batch(texts=batch_texts, instruction=instruction)
-                all_embeddings.append(emb.cpu().to(torch.float32))
-            return torch.cat(all_embeddings, dim=0).numpy()
-        else:
-            emb = self.embed_batch(texts=texts, instruction=instruction)
-            return emb.cpu().to(torch.float32).numpy()
-
-    def get_image_embeddings(
-        self,
-        images: DataLoader[BatchedInput] | list[Any],
-        show_progress_bar: bool = True,
-        **kwargs: Any,
-    ) -> Array:
-        instruction = kwargs.get("instruction")
-        if hasattr(images, "__iter__") and not isinstance(images, list):
-            all_embeddings = []
-            for batch in tqdm(images, disable=not show_progress_bar, desc="Encoding images"):
-                batch_images = batch["image"]
-                emb = self.embed_batch(images=batch_images, instruction=instruction)
-                all_embeddings.append(emb.cpu().to(torch.float32))
-            return torch.cat(all_embeddings, dim=0).numpy()
-        else:
-            emb = self.embed_batch(images=images, instruction=instruction)
-            return emb.cpu().to(torch.float32).numpy()
 
     def encode(
         self,
