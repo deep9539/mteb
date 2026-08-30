@@ -49,13 +49,15 @@ class OpsMMEmbeddingWrapper(AbsEncoder):
         else:
             self.torch_dtype = torch_dtype
 
+        trust_remote_code = kwargs.pop("trust_remote_code", True)
+
         self.base_model = AutoModelForImageTextToText.from_pretrained(
             model_name,
             revision=revision,
             torch_dtype=self.torch_dtype,
             low_cpu_mem_usage=True,
             attn_implementation=attn_implementation,
-            trust_remote_code=True,
+            trust_remote_code=trust_remote_code,
             **kwargs,
         ).to(self.device)
 
@@ -64,7 +66,7 @@ class OpsMMEmbeddingWrapper(AbsEncoder):
         self.processor = AutoProcessor.from_pretrained(
             model_name,
             revision=revision,
-            trust_remote_code=True,
+            trust_remote_code=trust_remote_code,
             min_pixels=256 * 28 * 28,
             max_pixels=1280 * 28 * 28,
         )
