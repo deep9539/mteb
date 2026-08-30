@@ -39,7 +39,7 @@ def test_ops_mm_embedding_wrapper(mock_processor_class, mock_model_class):
         "attention_mask": torch.ones(2, 10, dtype=torch.long),
     }
 
-    # Test embed_batch
+    # Test embed_batch with text
     texts = ["Hello", "World"]
     embs = wrapper.embed_batch(texts=texts)
     assert isinstance(embs, torch.Tensor)
@@ -49,3 +49,8 @@ def test_ops_mm_embedding_wrapper(mock_processor_class, mock_model_class):
     text_embeddings = wrapper.get_text_embeddings(texts)
     assert isinstance(text_embeddings, np.ndarray)
     assert text_embeddings.shape == (2, 128)
+
+    # Test embed_batch with 4D video tensor (shape: [T, C, H, W] - e.g. 3 frames of 3x100x100)
+    video_tensor = torch.zeros((3, 3, 100, 100))
+    embs_video = wrapper.embed_batch(images=[video_tensor])
+    assert isinstance(embs_video, torch.Tensor)

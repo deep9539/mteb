@@ -30,6 +30,9 @@ class OpsMMEmbeddingWrapper(AbsEncoder):
         torch_dtype: torch.dtype | str | None = None,
         attn_implementation: str | None = None,
         max_length: int | None = None,
+        fps: float | None = 2.0,
+        max_frames: int | None = 64,
+        num_frames: int | None = None,
         **kwargs: Any,
     ):
         from transformers import AutoModelForImageTextToText, AutoProcessor
@@ -38,6 +41,9 @@ class OpsMMEmbeddingWrapper(AbsEncoder):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model_name = model_name
         self.max_length = max_length
+        self.fps = fps
+        self.max_frames = max_frames
+        self.num_frames = num_frames
 
         if attn_implementation is None and is_flash_attn_2_available():
             attn_implementation = "flash_attention_2"
@@ -103,7 +109,11 @@ class OpsMMEmbeddingWrapper(AbsEncoder):
 
             input_str = ""
             if image is not None:
-                processed_image = [image] if not isinstance(image, list) else image
+                if isinstance(image, torch.Tensor) and image.ndim == 4:
+                    import torchvision.transforms.functional as F
+                    processed_image = [F.to_pil_image(frame) for frame in image]
+                else:
+                    processed_image = [image] if not isinstance(image, list) else image
                 input_str += "<|vision_start|><|image_pad|><|vision_end|>" * len(processed_image)
                 input_images.append(processed_image)
             else:
@@ -192,6 +202,15 @@ class OpsMMEmbeddingWrapper(AbsEncoder):
 
         if not (has_text or has_image or has_video):
             raise ValueError("No text, image, or video features found in inputs.")
+
+        if has_video:
+            from mteb.models.modality_collators import VideoCollator
+            inputs.collate_fn = VideoCollator(
+                target_sampling_rate=16000,
+                fps=self.fps,
+                max_frames=self.max_frames,
+                num_frames=self.num_frames,
+            )
 
         all_embeddings = []
         with torch.no_grad():
