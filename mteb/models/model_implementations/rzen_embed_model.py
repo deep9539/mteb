@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
-from PIL import Image
 from tqdm.auto import tqdm
 
 from mteb.models.abs_encoder import AbsEncoder
@@ -14,6 +13,7 @@ from mteb.models.modality_collators import VideoCollator
 from mteb.models.model_meta import ModelMeta, ScoringFunction
 
 if TYPE_CHECKING:
+    from PIL import Image
     from torch.utils.data import DataLoader
 
     from mteb.abstasks.task_metadata import TaskMetadata
@@ -67,26 +67,21 @@ def smart_resize(
 
 
 def fetch_image(
-    image: str | Image.Image | torch.Tensor | dict[str, Any],
+    image: Any,
     size_factor: int = IMAGE_FACTOR,
 ) -> Image.Image:
-    """Robust image parser supporting PIL Images, PyTorch Tensors, local paths, and HF bytes."""
-    from io import BytesIO
+    """Robust image parser supporting PIL Images, paths, and file-like objects."""
+    from PIL import Image
 
     if isinstance(image, Image.Image):
         image_obj = image
-    elif isinstance(image, torch.Tensor):
-        from torchvision.transforms.functional import to_pil_image
-
-        image_obj = to_pil_image(image.cpu())
-    elif isinstance(image, dict) and "bytes" in image:
-        image_obj = Image.open(BytesIO(image["bytes"]))
-    elif isinstance(image, str):
-        image_obj = Image.open(image)
     else:
-        raise TypeError(
-            f"Unrecognized or unsupported image input format: {type(image)}"
-        )
+        try:
+            image_obj = Image.open(image)
+        except Exception as e:
+            raise TypeError(
+                f"Failed to open image input of type {type(image)}: {e}"
+            ) from e
 
     image_obj = image_obj.convert("RGB")
     h, w = smart_resize(image_obj.height, image_obj.width, factor=size_factor)
@@ -100,6 +95,10 @@ class RzenEmbedWrapper(AbsEncoder):
         self,
         model_name: str = "qihoo360/RzenEmbed",
         device: str | None = None,
+        max_length: int = 2000,
+        fps: float = 2.0,
+        max_frames: int = 64,
+        num_frames: int | None = None,
         **kwargs: Any,
     ) -> None:
         from transformers import (
@@ -112,15 +111,9 @@ class RzenEmbedWrapper(AbsEncoder):
         max_image_tokens = kwargs.get("max_image_tokens", 1280)
         min_video_tokens = kwargs.get("min_video_tokens", 160)
         max_video_tokens = kwargs.get("max_video_tokens", 180)
-        max_length = kwargs.get("max_length", 2000)
-        fps = kwargs.get("fps", 2.0)
-        max_frames = kwargs.get("max_frames", 64)
-        num_frames = kwargs.get("num_frames", None)
 
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.max_length = max_length
-        self.normalize = True
-        self.use_instructions = True
         self.fps = fps
         self.max_frames = max_frames
         self.num_frames = num_frames
@@ -188,10 +181,15 @@ class RzenEmbedWrapper(AbsEncoder):
             else:
                 processed_images = None
 
-        if text is not None:
+        if instruction:
+            if text is not None:
+                input_str += instruction + text
+            else:
+                input_str += instruction
+        elif text is not None:
             input_str += text
 
-        system_instruction = instruction if instruction else self.default_instruction
+        system_instruction = self.default_instruction
         prompt = (
             f"<|im_start|>system\n{system_instruction}<|im_end|>\n"
             f"<|im_start|>user\n{input_str}<|im_end|>\n"
@@ -276,9 +274,7 @@ class RzenEmbedWrapper(AbsEncoder):
                 num_frames=self.num_frames,
             )
 
-        instruction = ""
-        if self.use_instructions:
-            instruction = self.get_task_instruction(task_metadata, prompt_type)
+        instruction = self.get_task_instruction(task_metadata, prompt_type)
 
         all_embeddings = []
 
@@ -289,6 +285,8 @@ class RzenEmbedWrapper(AbsEncoder):
                 text=input_texts,
                 images=batch_images,
                 padding=True,
+                truncation=True,
+                max_length=self.max_length,
                 return_tensors="pt",
             )
 
@@ -305,24 +303,7 @@ class RzenEmbedWrapper(AbsEncoder):
                 pixel_values = pixel_values.type(self.model.model.visual.get_dtype())
                 image_embeds = self.model.model.visual(
                     pixel_values, grid_thw=inputs_tokenized["image_grid_thw"]
-                )
-
-                if not isinstance(image_embeds, torch.Tensor):
-                    if (
-                        hasattr(image_embeds, "last_hidden_state")
-                        and image_embeds.last_hidden_state is not None
-                    ):
-                        image_embeds = image_embeds.last_hidden_state
-                    elif (
-                        hasattr(image_embeds, "image_embeds")
-                        and image_embeds.image_embeds is not None
-                    ):
-                        image_embeds = image_embeds.image_embeds
-                    else:
-                        image_embeds = image_embeds[0]
-
-                image_embeds = self.model.model.visual.merger(image_embeds)
-                image_embeds = image_embeds.to(inputs_embeds.device)
+                ).to(inputs_embeds.device)
 
                 image_mask = (
                     inputs_tokenized["input_ids"] == self.model.config.image_token_id
@@ -347,8 +328,7 @@ class RzenEmbedWrapper(AbsEncoder):
                     attention_mask.sum(dim=1) - 1,
                 ]
 
-            if self.normalize:
-                embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+            embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
 
             all_embeddings.append(embeddings.cpu().to(torch.float32))
 
@@ -366,7 +346,7 @@ rzen_embed = ModelMeta(
     n_parameters=8_291_375_616,
     memory_usage_mb=16584,
     embed_dim=3584,
-    license="apache-2.0",
+    license="mit",
     open_weights=True,
     max_tokens=32768,
     reference="https://huggingface.co/qihoo360/RzenEmbed",
@@ -376,4 +356,5 @@ rzen_embed = ModelMeta(
     public_training_code=None,
     public_training_data=None,
     training_datasets=None,
+    citation=CITATION,
 )
