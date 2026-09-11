@@ -7,8 +7,8 @@ import torch
 from tqdm.auto import tqdm
 
 from mteb.models.abs_encoder import AbsEncoder
-from mteb.models.model_meta import ModelMeta, ScoringFunction
 from mteb.models.model_implementations.ops_colqwen3_models import multilingual_langs
+from mteb.models.model_meta import ModelMeta, ScoringFunction
 
 if TYPE_CHECKING:
     from torch.utils.data import DataLoader
@@ -32,6 +32,7 @@ class OpsMMEmbeddingWrapper(AbsEncoder):
         fps: float | None = 2.0,
         max_frames: int | None = 64,
         num_frames: int | None = None,
+        trust_remote_code: bool = True,
         **kwargs: Any,
     ):
         from transformers import AutoModelForImageTextToText, AutoProcessor
@@ -47,15 +48,14 @@ class OpsMMEmbeddingWrapper(AbsEncoder):
             "flash_attention_2" if is_flash_attn_2_available() else None
         )
 
-        self.torch_dtype = torch_dtype or ("auto" if self.device.startswith("cuda") else torch.float32)
-
-        trust_remote_code = kwargs.pop("trust_remote_code", True)
+        self.torch_dtype = torch_dtype or (
+            "auto" if self.device.startswith("cuda") else torch.float32
+        )
 
         self.base_model = AutoModelForImageTextToText.from_pretrained(
             model_name,
             revision=revision,
             torch_dtype=self.torch_dtype,
-            low_cpu_mem_usage=True,
             attn_implementation=attn_implementation,
             trust_remote_code=trust_remote_code,
             **kwargs,
@@ -73,14 +73,19 @@ class OpsMMEmbeddingWrapper(AbsEncoder):
         self.processor.tokenizer.padding_side = "left"
 
     def encode_input(self, inputs: dict[str, Any]) -> torch.Tensor:
-        hidden_states = self.base_model(**inputs, return_dict=True, output_hidden_states=True)
+        hidden_states = self.base_model(
+            **inputs, return_dict=True, output_hidden_states=True
+        )
         hidden_states = hidden_states.hidden_states[-1]
         pooled_output = self._pooling(hidden_states)
         return pooled_output
 
-    def _pooling(self, last_hidden_state: torch.Tensor) -> torch.Tensor:
+    @staticmethod
+    def _pooling(last_hidden_state: torch.Tensor) -> torch.Tensor:
         batch_size = last_hidden_state.shape[0]
-        reps = last_hidden_state[torch.arange(batch_size, device=last_hidden_state.device), -1, :]
+        reps = last_hidden_state[
+            torch.arange(batch_size, device=last_hidden_state.device), -1, :
+        ]
         reps = torch.nn.functional.normalize(reps, p=2, dim=-1)
         return reps
 
@@ -91,7 +96,9 @@ class OpsMMEmbeddingWrapper(AbsEncoder):
         videos: list[Any] | None = None,
         instruction: str | None = None,
     ) -> torch.Tensor:
-        batch_size = next((len(x) for x in (texts, images, videos) if x is not None), None)
+        batch_size = next(
+            (len(x) for x in (texts, images, videos) if x is not None), None
+        )
         if batch_size is None:
             raise ValueError("Either texts, images, or videos must be provided")
 
@@ -100,7 +107,7 @@ class OpsMMEmbeddingWrapper(AbsEncoder):
         input_texts, input_images = [], []
         for i in range(batch_size):
             text = texts[i] if texts is not None else None
-            
+
             input_str = ""
             processed_media = []
 
@@ -113,13 +120,16 @@ class OpsMMEmbeddingWrapper(AbsEncoder):
             for media in media_items:
                 if isinstance(media, torch.Tensor) and media.ndim == 4:
                     import torchvision.transforms.functional as F
+
                     item_list = [F.to_pil_image(frame) for frame in media]
                 elif isinstance(media, list):
                     item_list = media
                 else:
                     item_list = [media]
 
-                input_str += "<|vision_start|><|image_pad|><|vision_end|>" * len(item_list)
+                input_str += "<|vision_start|><|image_pad|><|vision_end|>" * len(
+                    item_list
+                )
                 processed_media.extend(item_list)
 
             input_images.append(processed_media if processed_media else None)
@@ -138,7 +148,9 @@ class OpsMMEmbeddingWrapper(AbsEncoder):
             "return_tensors": "pt",
         }
         if processed_images is not None:
-            processor_kwargs["images"] = [img if img is not None else [] for img in processed_images]
+            processor_kwargs["images"] = [
+                img if img is not None else [] for img in processed_images
+            ]
 
         inputs = self.processor(**processor_kwargs)
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
@@ -156,6 +168,7 @@ class OpsMMEmbeddingWrapper(AbsEncoder):
         hf_split: str,
         hf_subset: str,
         prompt_type: PromptType | None = None,
+        show_progress_bar: bool = True,
         **kwargs: Any,
     ) -> Array:
         instruction = self.get_task_instruction(task_metadata, prompt_type)
@@ -170,6 +183,7 @@ class OpsMMEmbeddingWrapper(AbsEncoder):
 
         if has_video:
             from mteb.models.modality_collators import VideoCollator
+
             inputs.collate_fn = VideoCollator(
                 target_sampling_rate=16000,
                 fps=self.fps,
@@ -177,14 +191,18 @@ class OpsMMEmbeddingWrapper(AbsEncoder):
                 num_frames=self.num_frames,
             )
 
-        show_progress_bar = kwargs.get("show_progress_bar", True)
-
         all_embeddings = []
         with torch.no_grad():
             for batch in tqdm(inputs, desc="Encoding", disable=not show_progress_bar):
                 texts = batch["text"] if has_text else None
-                images = batch["image"] if has_image else (batch["video"] if has_video else None)
-                emb = self.embed_batch(texts=texts, images=images, instruction=instruction)
+                images = batch["image"] if has_image else None
+                videos = batch["video"] if has_video else None
+                emb = self.embed_batch(
+                    texts=texts,
+                    images=images,
+                    videos=videos,
+                    instruction=instruction,
+                )
                 all_embeddings.append(emb.cpu().to(torch.float32))
 
         return torch.cat(all_embeddings, dim=0).numpy()
